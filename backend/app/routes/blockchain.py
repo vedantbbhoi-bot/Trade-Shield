@@ -18,9 +18,11 @@ from ..blockchain import (
     recompute_mock_record_hash,
     verify_mock_proof,
 )
-from ..db import fetch_all, fetch_one, run
+from ..db import fetch_all, fetch_one, run, transaction
 from ..errors import ApiError
-from ..security import admin_required
+from flask import current_app
+
+from ..security import admin_required, client_ip
 
 bp = Blueprint("blockchain", __name__, url_prefix="/api/blockchain")
 
@@ -108,4 +110,83 @@ def verify_proof(proof_id):
         "proof_id": str(proof_id),
         "mock": True,
         "network": MOCK_NETWORK,
+    }), 200
+
+
+# --------------------------------------------------------------------------
+# Demo feature toggle (admin only)
+# --------------------------------------------------------------------------
+
+DEMO_FLAG_KEY = "demo_client_blockchain_proofs"
+
+
+@bp.get("/demo-toggle")
+@admin_required
+def demo_toggle_status():
+    row = fetch_one(
+        "SELECT flag_key, flag_value, updated_by, updated_at "
+        "FROM demo_feature_flags WHERE flag_key = %s",
+        (DEMO_FLAG_KEY,),
+    )
+    if not row:
+        return jsonify({
+            "data": {
+                "key": DEMO_FLAG_KEY,
+                "enabled": False,
+                "mock": True,
+                "network": MOCK_NETWORK,
+            }
+        }), 200
+    return jsonify({
+        "data": {
+            "key": row["flag_key"],
+            "enabled": row["flag_value"] == "true",
+            "updated_by": row["updated_by"],
+            "updated_at": row["updated_at"],
+            "mock": True,
+            "network": MOCK_NETWORK,
+        }
+    }), 200
+
+
+@bp.post("/demo-toggle")
+@admin_required
+def demo_toggle_set():
+    body = request.get_json(silent=True) or {}
+    desired = str(body.get("enabled", False)).lower()
+    if desired not in ("true", "false"):
+        raise ApiError(422, "VALIDATION_ERROR", "enabled must be true or false.")
+
+    new_value = "true" if desired == "true" else "false"
+    try:
+        with transaction():
+            run(
+                """INSERT INTO demo_feature_flags (flag_key, flag_value, updated_by)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (flag_key) DO UPDATE SET
+                       flag_value = EXCLUDED.flag_value,
+                       updated_by = EXCLUDED.updated_by,
+                       updated_at = now()
+                   RETURNING flag_value""",
+                (DEMO_FLAG_KEY, new_value, g.user["user_id"]),
+            )
+    except Exception:  # noqa: BLE001 - toggle failure must not be fatal
+        current_app.logger.exception(
+            "demo_blockchain: failed to set demo toggle for admin %s",
+            g.user["user_id"],
+        )
+        raise ApiError(500, "INTERNAL_ERROR", "Could not update demo toggle.")
+
+    enabled = new_value == "true"
+    return jsonify({
+        "data": {
+            "key": DEMO_FLAG_KEY,
+            "enabled": enabled,
+            "mock": True,
+            "network": MOCK_NETWORK,
+            "message": (
+                "Demo trade flagging (MOCK) is enabled. Trades from client@tradeshield.dev will be flagged for demonstration." if enabled
+                else "Demo trade flagging (MOCK) is disabled. Trades from client@tradeshield.dev will trade normally."
+            ),
+        }
     }), 200

@@ -143,9 +143,9 @@ SELECT (SELECT COUNT(*) FROM vw_active_threats)                       AS active_
        (SELECT COUNT(*) FROM threat_indicators WHERE NOT is_active)   AS disabled_indicators,
        (SELECT COUNT(*) FROM threat_sources)                          AS threat_sources,
        (SELECT COUNT(*) FROM security_events
-         WHERE event_type = 'ORDER_BLOCKED')                          AS blocked_orders_total,
+         WHERE event_type IN ('ORDER_BLOCKED', 'ORDER_FLAGGED', 'ORDER_FLAGGED_DEMO')) AS blocked_orders_total,
        (SELECT COUNT(*) FROM security_events
-         WHERE event_type = 'ORDER_BLOCKED'
+         WHERE event_type IN ('ORDER_BLOCKED', 'ORDER_FLAGGED', 'ORDER_FLAGGED_DEMO')
            AND created_at > now() - interval '24 hours')              AS blocked_orders_24h,
        (SELECT COUNT(*) FROM orders WHERE risk_status = 'FLAGGED')    AS flagged_orders_total,
        (SELECT COUNT(*) FROM security_events

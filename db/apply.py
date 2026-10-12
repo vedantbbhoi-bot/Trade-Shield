@@ -39,6 +39,8 @@ ORDER = [
     "06_seed.sql",
     "07_blockchain_proofs.sql",
     "07_blockchain_proofs_seed.sql",
+    "08_demo_feature_flags.sql",
+    "09_demo_flagging.sql",
 ]
 
 # Reverse dependency order -- used only by --reset.
@@ -107,10 +109,8 @@ def main() -> int:
         if args.reset:
             print("-- resetting: dropping TradeShield tables")
             with conn.transaction():
-                conn.execute(
-                    "DROP TABLE IF EXISTS "
-                    + ", ".join(f"{t} CASCADE" for t in DROP)
-                )
+                for t in DROP:
+                    conn.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
             print("   dropped")
 
         files = ORDER

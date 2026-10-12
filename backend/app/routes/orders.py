@@ -19,6 +19,56 @@ from ..db import fetch_all, fetch_one, run, transaction
 from ..errors import ApiError, translate_db_error
 from ..schemas import OrderIn, OrderQuery, parse
 from ..security import auth_required, current_account, json_body, resolve_origin_ip
+from ..blockchain import (
+    DEMO_CLIENT_USER_ID,
+    record_mock_proof_for_blocked_order,
+    record_mock_proof_for_demo_flagged_trade,
+    record_mock_proof_for_execution,
+)
+
+
+def _demo_mode_enabled() -> bool:
+    """Best-effort read of the admin demo toggle. Defaults to disabled."""
+    try:
+        row = fetch_one(
+            "SELECT flag_value FROM demo_feature_flags "
+            "WHERE flag_key = %s",
+            ("demo_client_blockchain_proofs",),
+        )
+        return row and row["flag_value"] == "true"
+    except Exception:  # noqa: BLE001 - demo mode must never affect core trading
+        return False
+
+
+def _should_flag_demo_trade() -> bool:
+    """Return True only when the admin demo toggle is ON for the demo client.
+
+    This is the DEMO trade flagging gate: only client@tradeshield.dev trades are
+    affected, and only when the admin has enabled the demo toggle. It does NOT
+    touch the real threat-screening trigger (t1) or any other security logic.
+    """
+    if not _demo_mode_enabled():
+        return False
+    user_id = g.user.get("user_id") if g.user else None
+    if not user_id:
+        return False
+    from ..blockchain import DEMO_CLIENT_USER_ID
+    return str(user_id) == DEMO_CLIENT_USER_ID
+
+
+def _demo_flag_order_values() -> tuple:
+    """Return the demo flag columns + values to append to the order INSERT.
+
+    When demo trade flagging is ON for the demo client, the order is inserted as
+    FLAGGED with a clear demo security_note so the existing AFTER INSERT trigger
+    t4 records an ORDER_FLAGGED security_event (with a null indicator, so it is
+    clearly distinguishable from a real threat detection).
+    """
+    return (
+        "risk_status", "security_note",
+        "FLAGGED",
+        "DEMO: trade flagged for demonstration (admin demo toggle ON, mock blockchain proof recorded)",
+    )
 
 bp = Blueprint("orders", __name__, url_prefix="/api/orders")
 
@@ -96,6 +146,27 @@ def _record_blocked_order(exc: psycopg.errors.DatabaseError,
             (g.user["user_id"], g.user["role"], origin_ip),
         )
 
+    # MOCK demo integration: record a mock proof for the demo client's
+    # blocked order when the admin demo toggle is enabled. Best-effort only.
+    try:
+        record_mock_proof_for_blocked_order(
+            account_id=account_id,
+            order_side=order.side,
+            order_type=order.order_type,
+            quantity=str(order.quantity),
+            limit_price=(str(order.limit_price) if order.limit_price is not None else None),
+            instrument=order.instrument,
+            origin_ip=origin_ip,
+            demo_mode_enabled=_demo_mode_enabled(),
+            actor_user_id=g.user.get("user_id"),
+            db_run=run,
+        )
+    except Exception:  # noqa: BLE001 - demo integration must never break blocked orders
+        current_app.logger.exception(
+            "demo_blockchain: failed to record mock proof for blocked order for account %s",
+            account_id,
+        )
+
 
 @bp.post("")
 @auth_required
@@ -152,6 +223,72 @@ def create_order():
         ORDER_SELECT + " WHERE o.order_id = %s AND o.account_id = %s",
         (created["order_id"], account["account_id"]),
     )
+
+    # MOCK demo integration: when demo trade flagging is ON for the demo
+    # client, mark the trade FLAGGED for demonstration and record a MOCK proof
+    # plus a clearly-labelled demo security event. The flag is applied via an
+    # UPDATE after insertion so it is not overwritten by the BEFORE INSERT
+    # screening trigger (t1), and no real threat indicator is involved. This is
+    # best-effort and never changes the trading response. The order is re-read
+    # after flagging so the API response reflects the final FLAGGED state.
+    demo_flag_applied = False
+    if _should_flag_demo_trade():
+        demo_note = (
+            "DEMO: trade flagged for demonstration "
+            "(admin demo toggle ON, mock blockchain proof recorded)"
+        )
+        demo_details = {
+            "side": order.side,
+            "order_type": order.order_type,
+            "quantity": str(order.quantity),
+            "limit_price": str(order.limit_price) if order.limit_price is not None else None,
+            "instrument": order.instrument,
+            "origin_ip": origin_ip,
+            "reason": demo_note,
+            "demo": "true",
+            "rejected_by": None,
+            "threat_indicator_id": None,
+        }
+        try:
+            with transaction():
+                run(
+                    """UPDATE orders
+                       SET risk_status = 'FLAGGED', security_note = %s
+                       WHERE order_id = %s""",
+                    (demo_note, created["order_id"]),
+                )
+                proof = record_mock_proof_for_demo_flagged_trade(
+                    order_id=created["order_id"],
+                    execution_id=execution.get("execution_id"),
+                    demo_mode_enabled=True,
+                    actor_user_id=g.user.get("user_id"),
+                    db_run=run,
+                )
+                if proof:
+                    demo_details["mock_proof_id"] = str(proof["proof_id"])
+                    demo_details["mock_proof_reference"] = proof["reference_id"]
+                run(
+                    """INSERT INTO security_events
+                          (event_type, severity, order_id, account_id, details)
+                       VALUES ('ORDER_FLAGGED_DEMO', 'medium', %s, %s, %s)""",
+                    (created["order_id"], account["account_id"],
+                     json.dumps(demo_details)),
+                )
+            demo_flag_applied = True
+        except Exception:  # noqa: BLE001 - demo integration must never break orders
+            current_app.logger.exception(
+                "demo_blockchain: failed to flag trade %s for demonstration",
+                created["order_id"],
+            )
+
+    # Reflect any demo flagging in the response so the caller sees the final
+    # state (the order was possibly set to FLAGGED after the initial read).
+    if demo_flag_applied:
+        final = fetch_one(
+            ORDER_SELECT + " WHERE o.order_id = %s AND o.account_id = %s",
+            (created["order_id"], account["account_id"]),
+        )
+
     return jsonify({"data": {"order": final, "execution": execution}}), 201
 
 

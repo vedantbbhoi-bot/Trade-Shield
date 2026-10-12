@@ -253,9 +253,10 @@ def blocked_orders():
     rows = fetch_all(
         "SELECT * FROM vw_blocked_orders LIMIT %s OFFSET %s", (limit, offset)
     )
+    # Total matches vw_blocked_orders (includes ORDER_BLOCKED, ORDER_FLAGGED, ORDER_FLAGGED_DEMO)
     total = fetch_one(
         """SELECT count(*) AS n FROM security_events
-           WHERE event_type IN ('ORDER_BLOCKED', 'ORDER_FLAGGED')"""
+           WHERE event_type IN ('ORDER_BLOCKED', 'ORDER_FLAGGED', 'ORDER_FLAGGED_DEMO')"""
     )["n"]
     return jsonify({"data": {"items": rows, "total": total}}), 200
 

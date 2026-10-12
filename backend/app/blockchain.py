@@ -49,6 +49,15 @@ def _hex(bytes_: bytes, length: int) -> str:
     return bytes_.hex()
 
 
+def _canonical_iso(dt: datetime) -> str:
+    """Stable ISO-8601 for a UTC datetime, ending in 'Z' so the DB seed and the
+    backend produce identical mock record hashes."""
+    s = dt.isoformat()
+    if s.endswith("+00:00"):
+        s = s[:-6] + "Z"
+    return s
+
+
 def mock_record_hash(reference_id: str, entity_type: str, event_type: str,
                      created_at_iso: str) -> str:
     """
@@ -121,7 +130,7 @@ def create_mock_proof(
     Returns the created mock proof payload.
     """
     now = created_at or datetime.now(timezone.utc)
-    created_at_iso = now.isoformat()
+    created_at_iso = _canonical_iso(now)
 
     record_hash = mock_record_hash(
         reference_id=reference_id,
@@ -130,13 +139,7 @@ def create_mock_proof(
         created_at_iso=created_at_iso,
     )
 
-    # Build the proof row first so we can derive the tx hash from the proof id.
-    proof_id = UUID(hex=hashlib.sha256(
-        f"mock-proof:{reference_id}:{entity_type}:{event_type}:{created_at_iso}".encode("utf-8")
-    ).hexdigest()[:32].ljust(32, "0") if False else None)  # type: ignore[arg-type]
-
     # Deterministic proof id (mocks do not need real randomness here).
-    proof_id = UUID(int=0)  # placeholder, replaced below
     raw = hashlib.sha256(
         f"mock-proof:{reference_id}:{entity_type}:{event_type}:{created_at_iso}".encode("utf-8")
     ).digest()
@@ -168,11 +171,16 @@ def recompute_mock_record_hash(proof: dict) -> str:
     This is the core of the mock verify flow: if the stored payload has not
     changed, the recomputed hash equals the stored record_hash.
     """
+    created_at = proof["created_at"]
+    if isinstance(created_at, datetime):
+        created_at_iso = _canonical_iso(created_at)
+    else:
+        created_at_iso = str(created_at)
     return mock_record_hash(
         reference_id=str(proof["reference_id"]),
         entity_type=str(proof["entity_type"]),
         event_type=str(proof["event_type"]),
-        created_at_iso=str(proof["created_at"].isoformat()),
+        created_at_iso=created_at_iso,
     )
 
 
@@ -199,3 +207,223 @@ def verify_mock_proof(proof: dict) -> dict:
 
 def is_valid_mock_hash(value: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{64}", value or ""))
+
+
+# ---------------------------------------------------------------------------
+# Demo integration helpers
+# ---------------------------------------------------------------------------
+
+DEMO_CLIENT_USER_ID = "a0000000-0000-4000-8000-000000000002"
+
+
+def should_record_proof_for_event(
+    *,
+    actor_user_id: str,
+    demo_mode_enabled: bool,
+) -> bool:
+    """Return True only for the demo client's critical events when demo mode is on."""
+    if not demo_mode_enabled:
+        return False
+    if not actor_user_id:
+        return False
+    # Coerce to str so UUID objects from the DB row still match the demo client id.
+    if str(actor_user_id) != DEMO_CLIENT_USER_ID:
+        return False
+    return True
+
+
+def record_mock_proof_for_execution(
+    *,
+    execution_id: str,
+    demo_mode_enabled: bool,
+    actor_user_id: str,
+    db_run,
+) -> dict | None:
+    """Record a mock proof for a successful trade execution if demo mode is on.
+
+    This is best-effort: any failure is logged and never breaks the trading
+    response, because the proof layer is MOCK only.
+    """
+    if not should_record_proof_for_event(
+        actor_user_id=actor_user_id,
+        demo_mode_enabled=demo_mode_enabled,
+    ):
+        return None
+
+    created_at = datetime.now(timezone.utc)
+    reference_id = f"exec:{execution_id}"
+    proof = create_mock_proof(
+        reference_id=reference_id,
+        entity_type="execution",
+        event_type="TRADE_EXECUTED",
+        created_at=created_at,
+    )
+
+    try:
+        db_run(
+            """INSERT INTO blockchain_proofs
+                  (proof_id, reference_id, entity_type, event_type,
+                   record_hash, blockchain_status, transaction_hash,
+                   block_number, network, contract_address, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (reference_id, entity_type) DO NOTHING""",
+            (
+                str(proof["proof_id"]),
+                proof["reference_id"],
+                proof["entity_type"],
+                proof["event_type"],
+                proof["record_hash"],
+                proof["blockchain_status"],
+                proof["transaction_hash"],
+                proof["block_number"],
+                proof["network"],
+                proof["contract_address"],
+                proof["created_at"],
+            ),
+        )
+    except Exception:  # noqa: BLE001 - proof persistence must never break trading
+        current_app_logger_exception(
+            "demo_blockchain: failed to persist mock proof for execution %s",
+            execution_id,
+        )
+        return None
+
+    return proof
+
+
+def record_mock_proof_for_blocked_order(
+    *,
+    account_id: str,
+    order_side: str,
+    order_type: str,
+    quantity: str,
+    limit_price: str | None,
+    instrument: str,
+    origin_ip: str,
+    demo_mode_enabled: bool,
+    actor_user_id: str,
+    db_run,
+) -> dict | None:
+    """Record a mock proof for a blocked/security event if demo mode is on."""
+    if not should_record_proof_for_event(
+        actor_user_id=actor_user_id,
+        demo_mode_enabled=demo_mode_enabled,
+    ):
+        return None
+
+    created_at = datetime.now(timezone.utc)
+    reference_id = f"blocked:{account_id}:{created_at.isoformat()}"
+    proof = create_mock_proof(
+        reference_id=reference_id,
+        entity_type="security_event",
+        event_type="ORDER_BLOCKED",
+        created_at=created_at,
+    )
+
+    try:
+        db_run(
+            """INSERT INTO blockchain_proofs
+                  (proof_id, reference_id, entity_type, event_type,
+                   record_hash, blockchain_status, transaction_hash,
+                   block_number, network, contract_address, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (reference_id, entity_type) DO NOTHING""",
+            (
+                str(proof["proof_id"]),
+                proof["reference_id"],
+                proof["entity_type"],
+                proof["event_type"],
+                proof["record_hash"],
+                proof["blockchain_status"],
+                proof["transaction_hash"],
+                proof["block_number"],
+                proof["network"],
+                proof["contract_address"],
+                proof["created_at"],
+            ),
+        )
+    except Exception:  # noqa: BLE001 - proof persistence must never break the block flow
+        current_app_logger_exception(
+            "demo_blockchain: failed to persist mock proof for blocked order for account %s",
+            account_id,
+        )
+        return None
+
+    return proof
+
+
+def current_app_logger_exception(message: str, *args) -> None:
+    """Best-effort logger access that never breaks callers."""
+    try:
+        from flask import current_app
+    except Exception:
+        return
+    try:
+        current_app.logger.exception(message, *args)
+    except Exception:
+        pass
+
+
+def record_mock_proof_for_demo_flagged_trade(
+    *,
+    order_id: str,
+    execution_id: str,
+    demo_mode_enabled: bool,
+    actor_user_id: str,
+    db_run,
+) -> dict | None:
+    """Record a MOCK proof for a demo-flagged trade.
+
+    This is the demo trade flagging integration: when the admin toggle is ON and
+    the actor is the demo client, each trade is marked FLAGGED for demonstration
+    and a mock proof is recorded. It is best-effort and never changes the trading
+    response, because the proof layer is MOCK only.
+    """
+    if not should_record_proof_for_event(
+        actor_user_id=actor_user_id,
+        demo_mode_enabled=demo_mode_enabled,
+    ):
+        return None
+
+    created_at = datetime.now(timezone.utc)
+    reference_id = f"demo-flag:{order_id}"
+    proof = create_mock_proof(
+        reference_id=reference_id,
+        entity_type="order",
+        event_type="ORDER_FLAGGED_DEMO",
+        created_at=created_at,
+    )
+    # Override status so the proof is clearly labelled as a MOCK demo record,
+    # not a real anchored transaction.
+    proof["blockchain_status"] = "mock"
+
+    try:
+        db_run(
+            """INSERT INTO blockchain_proofs
+                  (proof_id, reference_id, entity_type, event_type,
+                   record_hash, blockchain_status, transaction_hash,
+                   block_number, network, contract_address, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (reference_id, entity_type) DO NOTHING""",
+            (
+                str(proof["proof_id"]),
+                proof["reference_id"],
+                proof["entity_type"],
+                proof["event_type"],
+                proof["record_hash"],
+                proof["blockchain_status"],
+                proof["transaction_hash"],
+                proof["block_number"],
+                proof["network"],
+                proof["contract_address"],
+                proof["created_at"],
+            ),
+        )
+    except Exception:  # noqa: BLE001 - proof persistence must never break trading
+        current_app_logger_exception(
+            "demo_blockchain: failed to persist mock proof for demo-flagged trade %s",
+            order_id,
+        )
+        return None
+
+    return proof

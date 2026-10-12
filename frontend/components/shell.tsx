@@ -29,6 +29,7 @@ const SECURITY_NAV: NavItem[] = [
   { href: "/admin/threats", label: "Indicators", icon: "search", hint: "Threat intelligence" },
   { href: "/admin/blocked", label: "Blocked", icon: "blocked", hint: "Blocked & flagged" },
   { href: "/admin/audit", label: "Audit", icon: "audit", hint: "Audit trail" },
+  { href: "/admin/blockchain", label: "Blockchain", icon: "link", hint: "MOCK proof layer" },
 ];
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -42,6 +43,7 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/admin/threats": { title: "Threat Indicators", subtitle: "IP, domain, URL and hash intelligence" },
   "/admin/blocked": { title: "Blocked Orders", subtitle: "Rejected and screened order attempts" },
   "/admin/audit": { title: "Audit Logs", subtitle: "Who did what, when and from where" },
+  "/admin/blockchain": { title: "Blockchain Proofs", subtitle: "MOCK integrity layer for demonstration" },
 };
 
 function Brand() {

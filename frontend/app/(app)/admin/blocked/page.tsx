@@ -34,9 +34,14 @@ function BlockedContent() {
 
   const blocked = useApi<Paged<BlockedOrderRow>>(path);
 
+  const FLAG_EVENT_TYPES = new Set(["ORDER_FLAGGED", "ORDER_FLAGGED_DEMO"]);
+
   const rows = useMemo(() => {
     const items = blocked.data?.items ?? [];
     if (!outcome) return items;
+    if (outcome === "ORDER_FLAGGED") {
+      return items.filter((row) => FLAG_EVENT_TYPES.has(row.event_type));
+    }
     return items.filter((row) => row.event_type === outcome);
   }, [blocked.data, outcome]);
 
@@ -158,7 +163,7 @@ function BlockedContent() {
             loading={blocked.loading}
             rowKey={(row) => row.event_id}
             emptyTitle="No blocked or flagged orders"
-            emptyHint="Try an order from the seeded C2 address 198.51.100.66 to trigger a block."
+            emptyHint="Try an order from the seeded C2 address 198.51.100.66 to trigger a block, or enable demo trade flagging to flag client@tradeshield.dev trades."
           />
         )}
       </Card>

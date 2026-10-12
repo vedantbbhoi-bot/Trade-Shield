@@ -42,6 +42,8 @@ mock_hashes AS (
         mp.event_type,
         mp.note,
         -- deterministic mock record hash (same canonical inputs -> same hash)
+        -- Timestamp format must match backend _canonical_iso(): a UTC datetime with
+        -- microseconds and a trailing 'Z' (not '+00:00').
         encode(
             digest(
                 (mp.entity_type || ':' || mp.reference_id || ':' || mp.event_type || ':' || to_char(mn.ts, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')),

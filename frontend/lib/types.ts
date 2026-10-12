@@ -178,7 +178,7 @@ export interface ThreatSource {
 
 export interface BlockedOrderRow {
   event_id: string;
-  event_type: "ORDER_BLOCKED" | "ORDER_FLAGGED";
+  event_type: "ORDER_BLOCKED" | "ORDER_FLAGGED" | "ORDER_FLAGGED_DEMO";
   severity: "low" | "medium" | "high" | "critical";
   detected_at: string;
   account_id: string | null;

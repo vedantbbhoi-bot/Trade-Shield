@@ -35,20 +35,26 @@ export function Badge({
 export function RiskBadge({ risk }: { risk: string }) {
   if (risk === "FLAGGED") return <Badge tone="warn">Flagged</Badge>;
   return <Badge tone="gain">Clear</Badge>;
-}
-
-export function StatusBadge({ status }: { status: string }) {
+}export function StatusBadge({ status }: { status: string }) {
   const tone: Tone =
     status === "EXECUTED"
       ? "gain"
       : status === "PENDING"
         ? "warn"
-        : status === "FLAGGED"
+      : status === "ORDER_FLAGGED_DEMO"
+        ? "warn"
+      : status === "ORDER_FLAGGED"
           ? "alert"
-          : status === "ORDER_BLOCKED"
+      : status === "FLAGGED"
+          ? "alert"
+      : status === "ORDER_BLOCKED"
             ? "critical"
             : "neutral";
-  return <Badge tone={tone}>{status.replace(/_/g, " ")}</Badge>;
+  const label =
+    status === "ORDER_FLAGGED_DEMO"
+      ? "ORDER FLAGGED (DEMO)"
+      : status.replace(/_/g, " ");
+  return <Badge tone={tone}>{label}</Badge>;
 }
 
 export function SideBadge({ side }: { side: string }) {
