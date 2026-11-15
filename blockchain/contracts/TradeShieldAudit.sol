@@ -26,7 +26,7 @@ contract TradeShieldAudit {
 
     /// @notice TradeShield backend contract/network identifier for the current deployment.
     ///        Stored as a UTF-8 string, e.g. "tradeshield-local:31337".
-    string public immutable networkId;
+    string public networkId;
 
     /// @notice The TradeShield backend address authorized to anchor proofs.
     ///        The Flask backend authenticates to the node separately (via local
@@ -53,12 +53,7 @@ contract TradeShieldAudit {
     /// @param eventRef   opaque reference (e.g. "audit:<audit_id>")
     /// @param eventType  categorical label (e.g. "TRADE_EXECUTED")
     /// @param recordHash keccak256 of the canonical PostgreSQL record hash
-    /// @param txHash     the blockchain tx hash that anchored this proof (set by off-chain indexer)
     /// @param anchoredAt block timestamp at anchoring time
-    ///
-    /// NOTE: txHash is not known inside the contract (tx.hash is only available
-    /// off-chain). An indexer stores it in PostgreSQL. We emit eventRef + eventType
-    /// + recordHash here so the off-chain indexer can correlate.
     event ProofAnchored(
         string eventRef,
         string eventType,
@@ -102,12 +97,14 @@ contract TradeShieldAudit {
     ) external {
         if (msg.sender != backend) revert TradeShieldAuthFailed();
 
-        if (_eventRef.length > MAX_LABEL_LEN)
-            revert TradeShieldLabelTooLong(bytes1(0x45), _eventRef, _eventRef.length, MAX_LABEL_LEN); // 'E'
-        if (_eventType.length > MAX_LABEL_LEN)
-            revert TradeShieldLabelTooLong(bytes1(0x54), _eventType, _eventType.length, MAX_LABEL_LEN); // 'T'
-        if (_eventRef.length == 0) revert TradeShieldEmptyLabel(bytes1(0x45), _eventRef);
-        if (_eventType.length == 0) revert TradeShieldEmptyLabel(bytes1(0x54), _eventType);
+        uint256 refLen = bytes(_eventRef).length;
+        uint256 typeLen = bytes(_eventType).length;
+        if (refLen > MAX_LABEL_LEN)
+            revert TradeShieldLabelTooLong(bytes1(0x45), _eventRef, refLen, MAX_LABEL_LEN); // 'E'
+        if (typeLen > MAX_LABEL_LEN)
+            revert TradeShieldLabelTooLong(bytes1(0x54), _eventType, typeLen, MAX_LABEL_LEN); // 'T'
+        if (refLen == 0) revert TradeShieldEmptyLabel(bytes1(0x45), _eventRef);
+        if (typeLen == 0) revert TradeShieldEmptyLabel(bytes1(0x54), _eventType);
 
         if (proofs[_eventRef].exists) revert TradeShieldProofExists(_eventRef);
 
