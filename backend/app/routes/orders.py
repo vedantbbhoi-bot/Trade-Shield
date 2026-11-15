@@ -263,6 +263,9 @@ def create_order():
                     demo_mode_enabled=True,
                     actor_user_id=g.user.get("user_id"),
                     db_run=run,
+                    instrument_id=created.get("instrument_id"),
+                    side=created.get("side"),
+                    quantity=float(created.get("quantity") or 0) if created.get("quantity") is not None else None,
                 )
                 if proof:
                     demo_details["mock_proof_id"] = str(proof["proof_id"])

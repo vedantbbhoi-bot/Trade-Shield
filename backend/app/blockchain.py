@@ -1,25 +1,19 @@
 """
-TradeShield * MOCK blockchain integrity layer.
+TradeShield * blockchain integrity layer.
 
-IMPORTANT: This is a MOCK proof layer for demonstration only.
+This module wraps the proof creation / recording logic.  It tries to anchor
+each proof on the real Hardhat/EVM node (via app.chain); when the node is
+unavailable or not configured it falls back gracefully to the mock layer so
+nothing in the core trading path ever breaks.
 
-It is NOT a real blockchain.
-It does NOT submit real transactions.
-It does NOT use Web3.py, Hardhat, or any real chain client.
-It does NOT replace PostgreSQL, which remains the system of record.
+The mock layer stores deterministic-looking values in blockchain_proofs:
+- network           = "TradeShield Local Mock Chain" (or real node id)
+- contract_address  = deterministic 0x... (or real contract)
+- record_hash       = SHA-256 of canonical inputs
+- transaction_hash  = SHA-256 based (or real tx hash)
+- block_number      = deterministic integer (or real block number)
 
-What it does:
-- Generates deterministic-looking MOCK proof records for critical TradeShield
-  events (successful trade executions and blocked/security events).
-- Stores mock proof metadata in the `blockchain_proofs` table.
-- Provides a mock "verify" check that recomputes the stored mock record hash
-  from the same canonical inputs and compares it to the stored value.
-
-Mock values are intentionally clearly fake:
-- network = "TradeShield Local Mock Chain"
-- contract_address = deterministic-looking 0x... address
-- record_hash / transaction_hash = 64-char hex strings
-- block_number = deterministic-looking integer
+PostgreSQL remains the system of record for all trading and application data.
 """
 
 from __future__ import annotations
@@ -122,12 +116,13 @@ def create_mock_proof(
     created_at: datetime | None = None,
 ) -> MockProofCreated:
     """
-    Create a MOCK blockchain proof record for a critical TradeShield event.
+    Create a blockchain proof record for a critical TradeShield event.
+
+    Attempts to anchor the proof on the real Hardhat/EVM node first.
+    Falls back to the mock layer when the node is offline or not configured.
 
     Parameters are the minimal, non-sensitive metadata needed to anchor a proof
-    reference. Nothing sensitive is hashed or stored here.
-
-    Returns the created mock proof payload.
+    reference. Nothing sensitive is hashed or stored on-chain.
     """
     now = created_at or datetime.now(timezone.utc)
     created_at_iso = _canonical_iso(now)
@@ -139,12 +134,42 @@ def create_mock_proof(
         created_at_iso=created_at_iso,
     )
 
-    # Deterministic proof id (mocks do not need real randomness here).
+    # Deterministic proof id (stable across mock and real modes).
     raw = hashlib.sha256(
         f"mock-proof:{reference_id}:{entity_type}:{event_type}:{created_at_iso}".encode("utf-8")
     ).digest()
     proof_id = UUID(bytes=raw[:16])
 
+    # --- Try real on-chain anchor first -----------------------------------
+    try:
+        from .chain import anchor_proof_on_chain  # local import avoids circular deps
+        # event_ref must be ≤ 64 chars (contract limit)
+        event_ref = reference_id[:64]
+        chain_result = anchor_proof_on_chain(
+            event_ref=event_ref,
+            event_type=event_type[:64],
+            record_hash_hex=record_hash,
+        )
+    except Exception:
+        chain_result = None
+
+    if chain_result is not None:
+        # Real on-chain anchor succeeded — use the actual tx/block data.
+        return {
+            "proof_id": proof_id,
+            "reference_id": reference_id,
+            "entity_type": entity_type,
+            "event_type": event_type,
+            "record_hash": record_hash,
+            "blockchain_status": "anchored",
+            "transaction_hash": chain_result["tx_hash"].lstrip("0x"),
+            "block_number": chain_result["block_number"],
+            "network": chain_result["network"],
+            "contract_address": chain_result["contract_address"],
+            "created_at": now,
+        }
+
+    # --- Fallback: mock layer -------------------------------------------
     transaction_hash = mock_transaction_hash(proof_id=proof_id, network=MOCK_NETWORK)
     block_number = mock_block_number(proof_id=proof_id)
     contract_address = mock_contract_address(network=MOCK_NETWORK)
@@ -186,16 +211,41 @@ def recompute_mock_record_hash(proof: dict) -> str:
 
 def verify_mock_proof(proof: dict) -> dict:
     """
-    MOCK verification result for a stored proof.
+    Verify a stored proof.
 
-    Returns a clearly-labelled mock verification response.
+    When the Hardhat node is running and the proof was anchored on-chain,
+    this also cross-checks against the smart contract.  Falls back to the
+    pure local hash comparison when the node is offline.
     """
     recomputed = recompute_mock_record_hash(proof)
-    matches = (recomputed == str(proof.get("record_hash", "")))
+    local_matches = (recomputed == str(proof.get("record_hash", "")))
+
+    # Try on-chain verification as an additional check
+    on_chain = None
+    try:
+        from .chain import verify_proof_on_chain
+        event_ref = str(proof.get("reference_id", ""))[:64]
+        on_chain = verify_proof_on_chain(
+            event_ref=event_ref,
+            record_hash_hex=str(proof.get("record_hash", "")),
+        )
+    except Exception:
+        pass
+
+    is_real_chain = (
+        on_chain is not None
+        and str(proof.get("network", "")).startswith("hardhat-local:")
+    )
+
+    verified = local_matches
+    if is_real_chain:
+        # Only trust the proof if both local recomputation AND on-chain agree
+        verified = local_matches and on_chain["matches"]
 
     return {
-        "verified": bool(matches),
-        "mock": True,
+        "verified": bool(verified),
+        "mock": not is_real_chain,
+        "on_chain_verified": bool(on_chain["matches"]) if on_chain else None,
         "record_hash": str(proof.get("record_hash", "")),
         "transaction_hash": str(proof.get("transaction_hash", "")),
         "block_number": int(proof.get("block_number", 0)),
@@ -371,6 +421,9 @@ def record_mock_proof_for_demo_flagged_trade(
     demo_mode_enabled: bool,
     actor_user_id: str,
     db_run,
+    instrument_id: str | None = None,
+    side: str | None = None,
+    quantity: float | int | None = None,
 ) -> dict | None:
     """Record a MOCK proof for a demo-flagged trade.
 
@@ -378,6 +431,11 @@ def record_mock_proof_for_demo_flagged_trade(
     the actor is the demo client, each trade is marked FLAGGED for demonstration
     and a mock proof is recorded. It is best-effort and never changes the trading
     response, because the proof layer is MOCK only.
+
+    When the underlying order really executed, the caller should also pass the
+    instrument_id, side and quantity so the admin UI can show what was actually
+    traded. Those fields are stored only when they are provided -- older/other
+    callers remain backward compatible.
     """
     if not should_record_proof_for_event(
         actor_user_id=actor_user_id,
@@ -397,27 +455,38 @@ def record_mock_proof_for_demo_flagged_trade(
     # not a real anchored transaction.
     proof["blockchain_status"] = "mock"
 
+    # Persist trade context when available (backward compatible: ignored by
+    # callers that do not pass it).
+    trade_context_values: tuple = (
+        str(proof["proof_id"]),
+        proof["reference_id"],
+        proof["entity_type"],
+        proof["event_type"],
+        proof["record_hash"],
+        proof["blockchain_status"],
+        proof["transaction_hash"],
+        proof["block_number"],
+        proof["network"],
+        proof["contract_address"],
+        proof["created_at"],
+        order_id if order_id else None,
+        execution_id if execution_id else None,
+        instrument_id if instrument_id else None,
+        side if side else None,
+        quantity if quantity is not None else None,
+    )
+
     try:
         db_run(
             """INSERT INTO blockchain_proofs
                   (proof_id, reference_id, entity_type, event_type,
                    record_hash, blockchain_status, transaction_hash,
-                   block_number, network, contract_address, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   block_number, network, contract_address, created_at,
+                   order_id, execution_id, instrument_id, side, quantity)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                       %s, %s, %s, %s, %s)
                ON CONFLICT (reference_id, entity_type) DO NOTHING""",
-            (
-                str(proof["proof_id"]),
-                proof["reference_id"],
-                proof["entity_type"],
-                proof["event_type"],
-                proof["record_hash"],
-                proof["blockchain_status"],
-                proof["transaction_hash"],
-                proof["block_number"],
-                proof["network"],
-                proof["contract_address"],
-                proof["created_at"],
-            ),
+            trade_context_values,
         )
     except Exception:  # noqa: BLE001 - proof persistence must never break trading
         current_app_logger_exception(

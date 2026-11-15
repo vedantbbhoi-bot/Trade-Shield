@@ -8,3 +8,6 @@ pydantic>=2.7.0
 # password is hashed with argon2, and legacy hashes are upgraded on login.
 werkzeug>=3.0.0
 pytest>=8.0.0
+# Blockchain: connects the Flask backend to the local Hardhat EVM node.
+# Optional -- the app works without it (falls back to mock layer).
+web3>=6.0.0

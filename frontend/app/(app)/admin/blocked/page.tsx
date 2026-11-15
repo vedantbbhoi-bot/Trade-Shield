@@ -15,6 +15,18 @@ import { useApi } from "@/lib/hooks";
 import { dateTime, money } from "@/lib/format";
 import type { BlockedOrderRow, Paged } from "@/lib/types";
 
+function ViewProofButton({ proofId }: { proofId: string | null }) {
+  if (!proofId) return null;
+  return (
+    <a
+      href={`/admin/blockchain?proof=${proofId}`}
+      className="text-brand-soft hover:underline text-xs"
+    >
+      View MOCK proof
+    </a>
+  );
+}
+
 const SEVERITY_TONE: Record<string, Tone> = {
   critical: "critical",
   high: "loss",
@@ -119,6 +131,13 @@ function BlockedContent() {
           <Badge tone="critical">never written</Badge>
         ),
     },
+    {
+      key: "proof",
+      header: "MOCK proof",
+      render: (row) => (
+        <ViewProofButton proofId={row.proof_id} />
+      ),
+    },
   ];
 
   return (
@@ -170,6 +189,12 @@ function BlockedContent() {
 
       {expanded && (
         <Card title="Event payload" subtitle={expanded}>
+          {(blocked.data?.items ?? []).find((row) => row.event_id === expanded) && (
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-xs text-mute">MOCK proof:</span>
+              <ViewProofButton proofId={(blocked.data?.items ?? []).find((row) => row.event_id === expanded)?.proof_id ?? null} />
+            </div>
+          )}
           <pre className="max-h-96 overflow-auto rounded-xl bg-ink-950/70 p-4 text-xs text-mute">
             {JSON.stringify(
               (blocked.data?.items ?? []).find((row) => row.event_id === expanded)?.details ?? {},

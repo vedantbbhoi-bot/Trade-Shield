@@ -37,10 +37,22 @@ CREATE TABLE IF NOT EXISTS blockchain_proofs (
     network           VARCHAR(128) NOT NULL,
     contract_address  VARCHAR(42)  NOT NULL,
     created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    -- Optional trade context for demo-flagged-trade proofs so the admin UI
+    -- can show the actual instrument / side / quantity / order without
+    -- changing the core mock proof contract. Nullable: only populated for
+    -- demo FLAG proofs that correspond to a real order.
+    order_id          UUID,
+    execution_id      UUID,
+    instrument_id     UUID,
+    side              VARCHAR(4),
+    quantity          NUMERIC(18,6),
     CONSTRAINT uq_proof_reference_entity
         UNIQUE (reference_id, entity_type)
 );
 
 COMMENT ON TABLE blockchain_proofs IS
 ' MOCK blockchain integrity metadata for demonstration only.
-  NOT a real blockchain, NOT real transactions, NOT a replacement for any TradeShield table.';
+  NOT a real blockchain, NOT real transactions, NOT a replacement for any TradeShield table.
+  trade-context columns (order_id, execution_id, instrument_id, side, quantity) are
+  populated only for demo FLAG proofs that correspond to a real order -- they are NOT
+  stored for seed or other mock proofs, and never for real (non-demo) events.';

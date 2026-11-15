@@ -195,6 +195,8 @@ export interface BlockedOrderRow {
   attempted_limit_price: number | null;
   origin_ip: string | null;
   reason: string | null;
+  mock_proof_reference: string | null;
+  proof_id: string | null;
   details: Record<string, unknown> | null;
 }
 
@@ -242,6 +244,35 @@ export interface MockBlockchainProof {
   network: string;
   contract_address: string;
   created_at: string;
+  /** Populated only for demo FLAG proofs that correspond to a real order. */
+  order_id: string | null;
+  execution_id: string | null;
+  instrument_id: string | null;
+  side: string | null;
+  quantity: number | null;
+}
+
+export interface MockProofLink {
+  proof_id: string;
+  reference_id: string;
+  entity_type: string;
+  event_type: string;
+  trade: {
+    order_id: string | null;
+    order_type: string | null;
+    execution_id: string | null;
+    instrument_id: string | null;
+    instrument_symbol: string | null;
+    instrument_name: string | null;
+    side: string | null;
+    quantity: number | null;
+    executed_price: number | null;
+    executed_quantity: number | null;
+    risk_status: string | null;
+    security_note: string | null;
+    mock: boolean;
+  };
+  mock: boolean;
 }
 
 export interface MockVerifyResult {

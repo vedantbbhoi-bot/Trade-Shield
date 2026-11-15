@@ -28,9 +28,15 @@ ALTER TABLE security_events
                         'THREAT_MATCH', 'AUTH_FAILURE',
                         'THREAT_INDICATOR_CHANGED', 'ORDER_REJECTED'));
 
--- --- 2. Include ORDER_FLAGGED_DEMO in the blocked/flagged orders view --------
+-- --- 2. Include ORDER_FLAGGED_DEMO in the blocked/flagged orders view, with proof link --------
+-- Idempotent: drop the old view (if any) then recreate. Safe on a fresh or
+-- already-seeded DB. The view now exposes mock_proof_reference and proof_id so
+-- the admin blocked/flagged page can link each ORDER_FLAGGED_DEMO event to its
+-- MOCK blockchain proof.
 
-CREATE OR REPLACE VIEW vw_blocked_orders AS
+DROP VIEW IF EXISTS vw_blocked_orders;
+
+CREATE VIEW vw_blocked_orders AS
 SELECT e.event_id,
        e.event_type,
        e.severity,
@@ -49,9 +55,15 @@ SELECT e.event_id,
        (e.details->>'limit_price')::NUMERIC   AS attempted_limit_price,
        (e.details->>'origin_ip')     AS origin_ip,
        (e.details->>'reason')        AS reason,
+       (e.details->>'mock_proof_reference') AS mock_proof_reference,
+       p.proof_id                      AS proof_id,
        e.details
 FROM security_events e
 LEFT JOIN threat_indicators i ON i.indicator_id = e.indicator_id
 LEFT JOIN threat_sources s    ON s.source_id = i.source_id
+LEFT JOIN blockchain_proofs p
+       ON p.reference_id = e.details->>'mock_proof_reference'
+      AND p.entity_type = 'order'
+      AND p.event_type  = 'ORDER_FLAGGED_DEMO'
 WHERE e.event_type IN ('ORDER_BLOCKED', 'ORDER_FLAGGED', 'ORDER_FLAGGED_DEMO')
 ORDER BY e.created_at DESC;

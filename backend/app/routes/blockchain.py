@@ -27,6 +27,30 @@ from ..security import admin_required, client_ip
 bp = Blueprint("blockchain", __name__, url_prefix="/api/blockchain")
 
 
+def _proof_row_to_api(row: dict) -> dict:
+    """Normalize a blockchain_proofs row for the API, including optional trade
+    context so the admin UI can show the linked instrument / side / quantity."""
+    out = {
+        "proof_id": str(row["proof_id"]),
+        "reference_id": str(row["reference_id"]),
+        "entity_type": str(row["entity_type"]),
+        "event_type": str(row["event_type"]),
+        "record_hash": str(row["record_hash"]),
+        "blockchain_status": str(row["blockchain_status"]),
+        "transaction_hash": str(row["transaction_hash"]),
+        "block_number": int(row["block_number"]),
+        "network": str(row["network"]),
+        "contract_address": str(row["contract_address"]),
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "order_id": str(row["order_id"]) if row["order_id"] else None,
+        "execution_id": str(row["execution_id"]) if row["execution_id"] else None,
+        "instrument_id": str(row["instrument_id"]) if row["instrument_id"] else None,
+        "side": str(row["side"]) if row["side"] else None,
+        "quantity": float(row["quantity"]) if row["quantity"] is not None else None,
+    }
+    return out
+
+
 def _parse_paging() -> tuple[int, int]:
     try:
         limit = int(request.args.get("limit", 50))
@@ -47,7 +71,8 @@ def list_proofs():
     rows = fetch_all(
         """SELECT proof_id, reference_id, entity_type, event_type,
                   record_hash, blockchain_status, transaction_hash,
-                  block_number, network, contract_address, created_at
+                  block_number, network, contract_address, created_at,
+                  order_id, execution_id, instrument_id, side, quantity
            FROM blockchain_proofs
            ORDER BY created_at DESC
            LIMIT %s OFFSET %s""",
@@ -56,7 +81,7 @@ def list_proofs():
     total = fetch_one("SELECT count(*) AS n FROM blockchain_proofs")["n"]
     return jsonify({
         "data": {
-            "items": rows,
+            "items": [_proof_row_to_api(r) for r in rows],
             "total": total,
             "mock": True,
             "network": MOCK_NETWORK,
@@ -70,7 +95,8 @@ def get_proof(proof_id):
     row = fetch_one(
         """SELECT proof_id, reference_id, entity_type, event_type,
                   record_hash, blockchain_status, transaction_hash,
-                  block_number, network, contract_address, created_at
+                  block_number, network, contract_address, created_at,
+                  order_id, execution_id, instrument_id, side, quantity
            FROM blockchain_proofs
            WHERE proof_id = %s""",
         (str(proof_id),),
@@ -78,7 +104,7 @@ def get_proof(proof_id):
     if not row:
         raise ApiError(404, "PROOF_NOT_FOUND", "Mock proof record not found.")
     return jsonify({
-        "data": row,
+        "data": _proof_row_to_api(row),
         "mock": True,
         "network": MOCK_NETWORK,
     }), 200
@@ -110,6 +136,80 @@ def verify_proof(proof_id):
         "proof_id": str(proof_id),
         "mock": True,
         "network": MOCK_NETWORK,
+    }), 200
+
+
+@bp.get("/proofs/<uuid:proof_id>/link")
+@admin_required
+def proof_linked_order(proof_id):
+    """Return the trade an admin FLAG proof is anchored to, if any.
+
+    Only demo FLAG proofs carry trade context (order_id / instrument_id / side /
+    quantity). For seed or execution proofs this returns an empty trade object.
+    """
+    proof = fetch_one(
+        """SELECT proof_id, reference_id, entity_type, event_type,
+                  order_id, execution_id, instrument_id, side, quantity
+           FROM blockchain_proofs
+           WHERE proof_id = %s""",
+        (str(proof_id),),
+    )
+    if not proof:
+        raise ApiError(404, "PROOF_NOT_FOUND", "Mock proof record not found.")
+
+    trade: dict = {
+        "order_id": None,
+        "execution_id": None,
+        "instrument_id": None,
+        "instrument_symbol": None,
+        "instrument_name": None,
+        "side": None,
+        "quantity": None,
+        "executed_price": None,
+        "executed_quantity": None,
+        "mock": True,
+    }
+
+    oid = proof["order_id"]
+    if oid:
+        order = fetch_one(
+            """SELECT o.order_id, o.side, o.order_type, o.quantity,
+                      o.execution_price, o.risk_status, o.security_note,
+                      i.symbol, i.name AS instrument_name,
+                      e.execution_id, e.quantity AS executed_quantity,
+                      e.price AS executed_price
+               FROM orders o
+               JOIN instruments i ON i.instrument_id = o.instrument_id
+               LEFT JOIN trade_executions e ON e.order_id = o.order_id
+               WHERE o.order_id = %s""",
+            (oid,),
+        )
+        if order:
+            trade = {
+                "order_id": str(order["order_id"]),
+                "order_type": str(order["order_type"]),
+                "execution_id": str(order["execution_id"]) if order["execution_id"] else None,
+                "instrument_id": str(order["instrument_id"]),
+                "instrument_symbol": str(order["symbol"]),
+                "instrument_name": str(order["instrument_name"]),
+                "side": str(order["side"]),
+                "quantity": float(order["quantity"]) if order["quantity"] is not None else None,
+                "executed_price": float(order["executed_price"]) if order["executed_price"] is not None else None,
+                "executed_quantity": float(order["executed_quantity"]) if order["executed_quantity"] is not None else None,
+                "risk_status": str(order["risk_status"]),
+                "security_note": str(order["security_note"]) if order["security_note"] else None,
+                "mock": True,
+            }
+
+    return jsonify({
+        "data": {
+            "proof_id": str(proof["proof_id"]),
+            "reference_id": str(proof["reference_id"]),
+            "entity_type": str(proof["entity_type"]),
+            "event_type": str(proof["event_type"]),
+            "trade": trade,
+            "mock": True,
+        }
     }), 200
 
 
